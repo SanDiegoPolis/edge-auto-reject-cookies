@@ -1,0 +1,9 @@
+{
+  "name": "edge-auto-reject-cookies",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Automatically reject optional cookies in Microsoft Edge.",
+  "scripts": {
+    "test": "node --test"
+  }
+}
