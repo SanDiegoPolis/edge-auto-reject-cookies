@@ -16,7 +16,7 @@
 
   // Exact labels keep explanatory text and buttons with a second action out of the match.
   const rejectLabels = new Set([
-    'reject all', 'reject all cookies', 'reject cookies', 'reject optional cookies',
+    'reject all', 'reject all cookies', 'reject cookies', 'reject optional cookies', 'reject additional cookies',
     'reject all optional cookies', 'reject non-essential cookies', 'reject all non-essential cookies',
     'reject nonessential cookies', 'reject all nonessential cookies', 'reject unnecessary cookies',
     'decline all', 'decline all cookies', 'decline cookies', 'decline optional cookies',
@@ -80,7 +80,7 @@
   const acceptLabels = new Set([
     'accept', 'accept all', 'accept cookies', 'accept all cookies', 'accept all and continue',
     'allow', 'allow all', 'allow cookies', 'allow all cookies', 'agree', 'agree to all', 'i agree',
-    'accept optional cookies', 'accept all optional cookies', 'allow optional cookies',
+    'accept optional cookies', 'accept all optional cookies', 'allow optional cookies', 'accept additional cookies',
     '接受', '接受全部', '全部接受', '同意', '同意全部', '全部同意', '接受所有cookie',
     '接受所有cookies', '接受全部cookie', '接受全部cookies', '允许所有cookie', '允许所有cookies',
     '允許所有cookie', '允許所有cookies', 'alle akzeptieren', 'alles akzeptieren',

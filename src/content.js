@@ -8,17 +8,22 @@
   const knownBannerSelector = [
     "#onetrust-banner-sdk", "#onetrust-pc-sdk", "#CybotCookiebotDialog",
     "#didomi-notice", "#didomi-popup", ".cky-consent-container", ".cky-preference-center",
-    "#uc-main-dialog", ".qc-cmp2-container",
+    "#uc-main-dialog", ".qc-cmp2-container", ".govuk-cookie-banner > .govuk-cookie-banner__message",
   ].join(", ");
   const dialogSelector = 'dialog[open], [role="dialog"], [role="alertdialog"], [aria-modal="true"]';
   const cookieMarker = /\bcookies?\b|쿠키|クッキー|曲奇|餅乾|饼干/i;
   const bannerMarker = /\b(?:consent|banner|notice|dialog|popup|modal|preferences?|settings|bar|overlay)\b/i;
-  const scanDelay = 300;
+  const settleDelay = 75;
+  const startupWait = 1000;
+  const dismissalWait = 1800;
   const maxActionsPerPage = 3;
 
   const rootObservers = new Map();
   const pendingShadowSearches = new Set();
-  let nextScan;
+  let scanQueued = false;
+  let pageReady = document.readyState !== "loading";
+  let canHideWhileLoading = true;
+  let pending;
   let currentPage = pageKey();
   const handledElements = new WeakSet();
   const handledBanners = new Set();
@@ -108,17 +113,19 @@
     return false;
   }
 
-  function isVisible(element) {
+  function isRendered(element) {
     if (typeof element.checkVisibility === "function") {
-      if (!element.checkVisibility({ opacityProperty: true, visibilityProperty: true, contentVisibilityAuto: true })) return false;
-    } else {
-      for (let node = element; node; node = composedParent(node)) {
-        const style = getComputedStyle(node);
-        if (style.opacity === "0" || style.contentVisibility === "hidden") return false;
-      }
-      if (getComputedStyle(element).visibility !== "visible") return false;
+      return element.checkVisibility({ opacityProperty: true, visibilityProperty: true, contentVisibilityAuto: true });
     }
+    for (let node = element; node; node = composedParent(node)) {
+      const style = getComputedStyle(node);
+      if (style.opacity === "0" || style.contentVisibility === "hidden") return false;
+    }
+    return getComputedStyle(element).visibility === "visible";
+  }
 
+  function isVisible(element) {
+    if (!isRendered(element)) return false;
     const rect = element.getBoundingClientRect();
     const left = Math.max(0, rect.left);
     const right = Math.min(window.innerWidth, rect.right);
@@ -176,6 +183,106 @@
     return null;
   }
 
+  function preferredBanner(scope) {
+    for (let node = scope; node && node !== document.body && node !== document.documentElement; node = composedParent(node)) {
+      if (node.matches(knownBannerSelector) || (node.matches(dialogSelector) && isConsentText(bannerText(node)))) {
+        return node;
+      }
+    }
+    return scope;
+  }
+
+  function concealBanner(scope) {
+    const inert = scope.getAttribute("inert");
+    const pendingInert = "auto-reject-cookies-pending";
+    const styles = [["opacity", "0"], ["visibility", "hidden"]].map(([property, masked]) => {
+      const value = scope.style.getPropertyValue(property);
+      const priority = scope.style.getPropertyPriority(property);
+      scope.style.setProperty(property, masked, "important");
+      return { property, masked, value, priority };
+    });
+    scope.setAttribute("inert", pendingInert);
+    return () => {
+      if (scope.getAttribute("inert") === pendingInert) {
+        if (inert === null) scope.removeAttribute("inert");
+        else scope.setAttribute("inert", inert);
+      }
+      for (const { property, masked, value, priority } of styles) {
+        if (scope.style.getPropertyValue(property) !== masked || scope.style.getPropertyPriority(property) !== "important") continue;
+        if (value) scope.style.setProperty(property, value, priority);
+        else scope.style.removeProperty(property);
+      }
+    };
+  }
+
+  function choiceStillDisplayed(scope, root) {
+    const banner = scope.isConnected ? scope : (scope.id && root.getElementById(scope.id));
+    if (!banner) return false;
+    const controlRoots = [banner, ...Array.from(rootObservers.keys()).filter(
+      (observedRoot) => observedRoot.host && containsComposed(banner, observedRoot.host),
+    )];
+    return controlRoots.some((observedRoot) => Array.from(observedRoot.querySelectorAll(controlSelector)).some((control) => {
+      if (!control.getClientRects().length || !isRendered(control)) return false;
+      const [label] = labelsFor(control);
+      return Boolean(classifyActionLabel(label) || isAcceptLabel(label));
+    }));
+  }
+
+  function submitChoice(selected) {
+    // Mark before clicking so a page that rerenders on every click cannot create a loop.
+    handledElements.add(selected.element);
+    handledBanners.add(selected.scope);
+    handledSignatures.add(selected.signature);
+    const root = selected.scope.getRootNode();
+    let reveal = concealBanner(selected.scope);
+    const deadline = performance.now() + dismissalWait;
+    pending = { submitted: true };
+    try {
+      HTMLElement.prototype.click.call(selected.element);
+    } catch {
+      reveal();
+      pending = undefined;
+      scheduleScan();
+      return;
+    }
+
+    function verifyDismissal() {
+      // Read the site's own display state and restore it in the same task on failure.
+      reveal();
+      const dismissed = !choiceStillDisplayed(selected.scope, root);
+      if (!dismissed && performance.now() < deadline) {
+        reveal = concealBanner(selected.scope);
+        setTimeout(verifyDismissal, settleDelay);
+        return;
+      }
+      pending = undefined;
+      scheduleScan();
+      if (dismissed) globalThis.CookieConsentNotice.show(selected.action);
+    }
+    setTimeout(verifyDismissal, settleDelay);
+  }
+
+  function stageChoice(selected) {
+    const staged = { reveal: concealBanner(selected.scope) };
+    pending = staged;
+    if (pageReady) {
+      staged.timer = setTimeout(commitStagedChoice, settleDelay);
+    } else {
+      staged.timer = setTimeout(() => {
+        staged.reveal();
+        pending = undefined;
+        canHideWhileLoading = false;
+      }, startupWait);
+    }
+  }
+
+  function commitStagedChoice() {
+    pending.reveal();
+    pending = undefined;
+    // Refresh the candidates before the click in case the page added a higher-priority opt-out.
+    scan(false);
+  }
+
   function observeRoot(root) {
     if (rootObservers.has(root)) return;
     const observer = new MutationObserver((records) => {
@@ -223,8 +330,8 @@
     pendingShadowSearches.clear();
   }
 
-  function scan() {
-    nextScan = undefined;
+  function scan(allowStaging = true) {
+    if (pending || (!pageReady && !canHideWhileLoading)) return;
     if (currentPage !== pageKey()) {
       currentPage = pageKey();
       handledSignatures.clear();
@@ -252,7 +359,8 @@
     const contextCache = new Map();
     const eligible = [];
     for (const candidate of candidates) {
-      const scope = consentBannerFor(candidate, acceptPeers, contextCache);
+      const matched = consentBannerFor(candidate, acceptPeers, contextCache);
+      const scope = matched && preferredBanner(matched);
       if (!scope || [...handledBanners].some((handled) =>
         containsComposed(handled, scope) || containsComposed(scope, handled))) continue;
       const identity = scope.id ? `#${scope.id}` : normalizeText(bannerText(scope)).slice(0, 200);
@@ -262,16 +370,19 @@
     const selected = chooseConsentAction(eligible, { isConsentContext: true, allowBareDecline: true });
     if (!selected || !isSafeControl(selected.element) || !isVisible(selected.element)) return;
 
-    // Mark before clicking so a page that rerenders on every click cannot create a loop.
-    handledElements.add(selected.element);
-    handledBanners.add(selected.scope);
-    handledSignatures.add(selected.signature);
-    HTMLElement.prototype.click.call(selected.element);
-    scheduleScan();
+    if (allowStaging) stageChoice(selected);
+    else submitChoice(selected);
   }
 
   function scheduleScan() {
-    if (nextScan === undefined) nextScan = setTimeout(scan, scanDelay);
+    if (pending || scanQueued) return;
+    scanQueued = true;
+    const run = () => {
+      scanQueued = false;
+      scan();
+    };
+    if (document.hidden) setTimeout(run, settleDelay);
+    else requestAnimationFrame(run);
   }
 
   function rediscoverShadows() {
@@ -281,6 +392,15 @@
 
   observeRoot(document);
   scheduleScan();
+  document.addEventListener("DOMContentLoaded", () => {
+    pageReady = true;
+    if (pending && !pending.submitted) {
+      clearTimeout(pending.timer);
+      pending.timer = setTimeout(commitStagedChoice, settleDelay);
+    } else {
+      scheduleScan();
+    }
+  }, { once: true });
   // A host already in the DOM can attach a shadow root without a DOM mutation.
   for (const delay of [1000, 3000, 8000]) setTimeout(rediscoverShadows, delay);
   setInterval(() => {

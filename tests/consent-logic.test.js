@@ -18,6 +18,18 @@ test('rejects optional cookies even if the necessary-only choice comes first', (
   ], consentContext), reject);
 });
 
+test('selects the explicit GOV.UK rejection in a cookie banner', () => {
+  const accept = control('Accept additional cookies');
+  const reject = control('Reject additional cookies');
+  const controls = [accept, reject, control('View cookies')];
+
+  assert.equal(chooseConsentAction(controls, consentContext), reject);
+  assert.equal(chooseConsentAction(controls, { isConsentContext: false }), null);
+  assert.equal(chooseConsentAction([control('Reject additional cookies and subscribe')], consentContext), null);
+  const contradictory = { ...reject, labels: [...reject.labels, ...accept.labels] };
+  assert.equal(chooseConsentAction([contradictory], consentContext), null);
+});
+
 test('uses a visible necessary-only choice when reject controls cannot be used', () => {
   const necessary = control('  Ｏｎｌｙ\u00a0necessary  ');
 

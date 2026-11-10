@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Auto Reject Cookies",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Reject optional cookies automatically when a website offers a clear opt-out.",
   "icons": {
     "16": "icons/16.png",
@@ -12,10 +12,10 @@
   "content_scripts": [
     {
       "matches": ["http://*/*", "https://*/*"],
-      "js": ["src/consent-logic.js", "src/content.js"],
+      "js": ["src/consent-logic.js", "src/notice.js", "src/content.js"],
       "all_frames": true,
       "match_about_blank": true,
-      "run_at": "document_idle"
+      "run_at": "document_start"
     }
   ]
 }
